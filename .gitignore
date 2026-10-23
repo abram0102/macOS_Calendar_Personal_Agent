@@ -1,0 +1,14 @@
+# Build products
+build/
+*.app
+*.dSYM
+*.o
+*.swiftmodule
+
+# macOS
+.DS_Store
+
+# Xcode, in case the project is ever opened there
+*.xcuserdatad
+xcuserdata/
+DerivedData/
