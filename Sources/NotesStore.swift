@@ -1,6 +1,14 @@
 import Foundation
 import SwiftUI
 
+/// What happened to a calendar event inside this window.
+/// `done` = ticked off and shown under Done; `hidden` = removed from the window entirely.
+/// Neither one touches the event in the system Calendar.
+enum EventMark: String, Codable {
+    case done
+    case hidden
+}
+
 /// A single to-do item
 struct TodoItem: Codable, Identifiable, Equatable {
     var id: String = UUID().uuidString
@@ -22,6 +30,7 @@ final class NotesStore: ObservableObject {
         var version: Int?
         var lists: [String: [TodoItem]]?
         var eventNotes: [String: String]?
+        var eventStates: [String: EventRecord]?
         // Legacy v1 fields, kept for migration
         var pinned: String?
         var dayNotes: [String: String]?
@@ -29,6 +38,14 @@ final class NotesStore: ObservableObject {
 
     @Published private var lists: [String: [TodoItem]] = [:]
     @Published private var eventNotes: [String: String] = [:]
+    @Published private var eventStates: [String: EventRecord] = [:]
+
+    /// Local state of one calendar event (the event itself is never modified)
+    struct EventRecord: Codable {
+        var state: EventMark
+        var day: String            // yyyy-MM-dd, used for pruning
+        var completed: Date?
+    }
 
     private let url: URL
     private var saveWork: DispatchWorkItem?
@@ -51,6 +68,8 @@ final class NotesStore: ObservableObject {
               let payload = try? JSONDecoder().decode(Payload.self, from: data) else { return }
         lists = payload.lists ?? [:]
         eventNotes = payload.eventNotes ?? [:]
+        eventStates = payload.eventStates ?? [:]
+        pruneEventStates()
 
         // v1 plain-text notes -> one to-do per line
         if (payload.version ?? 1) < 2 {
@@ -81,7 +100,7 @@ final class NotesStore: ObservableObject {
     func saveNow() {
         saveWork?.cancel()
         let payload = Payload(version: 2, lists: lists, eventNotes: eventNotes,
-                              pinned: nil, dayNotes: nil)
+                              eventStates: eventStates, pinned: nil, dayNotes: nil)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(payload) else { return }
@@ -160,4 +179,66 @@ final class NotesStore: ObservableObject {
     }
 
     func hasEventNote(_ key: String) -> Bool { !(eventNotes[key] ?? "").isEmpty }
+
+    // MARK: - Calendar events as to-dos
+
+    func mark(_ eventID: String) -> EventMark? { eventStates[eventID]?.state }
+
+    func completedAt(_ eventID: String) -> Date? { eventStates[eventID]?.completed }
+
+    /// Events still waiting to be done
+    func activeEvents(_ events: [DeskEvent]) -> [DeskEvent] {
+        events.filter { mark($0.id) == nil }
+    }
+
+    /// Events ticked off, newest first
+    func doneEvents(_ events: [DeskEvent]) -> [DeskEvent] {
+        events.filter { mark($0.id) == .done }
+            .sorted { (completedAt($0.id) ?? .distantPast) > (completedAt($1.id) ?? .distantPast) }
+    }
+
+    func setEventDone(_ eventID: String, day: String, done: Bool) {
+        if done {
+            eventStates[eventID] = EventRecord(state: .done, day: day, completed: Date())
+        } else {
+            eventStates.removeValue(forKey: eventID)
+        }
+        saveNow()
+    }
+
+    /// Takes the event out of the window. The calendar entry stays untouched,
+    /// and "unhideAllEvents()" brings every hidden one back.
+    func hideEvent(_ eventID: String, day: String) {
+        eventStates[eventID] = EventRecord(state: .hidden, day: day, completed: nil)
+        saveNow()
+    }
+
+    var hiddenEventCount: Int { eventStates.values.filter { $0.state == .hidden }.count }
+
+    func unhideAllEvents() {
+        eventStates = eventStates.filter { $0.value.state != .hidden }
+        saveNow()
+    }
+
+    /// Clearing a day's Done: manual to-dos are deleted, calendar events are hidden
+    func clearDone(_ key: String, eventIDs: [String]) {
+        lists[key]?.removeAll(where: \.done)
+        if lists[key]?.isEmpty == true { lists.removeValue(forKey: key) }
+        for id in eventIDs where eventStates[id]?.state == .done {
+            eventStates[id] = EventRecord(state: .hidden, day: key, completed: nil)
+        }
+        saveNow()
+    }
+
+    /// Drop records older than 90 days so the file does not grow forever
+    private func pruneEventStates() {
+        guard let cutoff = Calendar.current.date(byAdding: .day, value: -90, to: Date())
+        else { return }
+        let limit = DeskFormatters.dayKey.string(from: cutoff)
+        let kept = eventStates.filter { $0.value.day >= limit }
+        if kept.count != eventStates.count {
+            eventStates = kept
+            saveNow()
+        }
+    }
 }

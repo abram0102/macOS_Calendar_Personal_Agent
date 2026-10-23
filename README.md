@@ -35,13 +35,21 @@ slider button in the window's title bar.
 
 ### To-dos and Done
 
+Two things can be ticked off, and both land in the same Done section: to-dos you typed, and the
+events pulled in from the calendar.
+
 - A pinned list sits at the top; every day has its own list below its events.
 - Type into the dashed field and press **Return** to create a to-do. Each one gets its own box,
   and its text stays editable in place.
-- Click the circle on the left to complete it: a **rag animation** sweeps a small sponge from left
-  to right, wiping the text out of the box, and the item drops into the **Done** section below.
-- Done is collapsed by default and shows a count. Expanded, each row can be **deleted** (trash) or
-  put back into the to-dos (green check); "清空" removes every completed item in that list.
+- Click the circle on the left — on a to-do box or on a calendar event — to complete it: a **rag
+  animation** sweeps a small sponge from left to right, wiping the text away, and the item drops
+  into the **Done** section of that day.
+- Completing a calendar event is recorded locally only. The event in Calendar is never touched,
+  and it reappears as soon as it is restored.
+- Done is collapsed by default and shows a count. Rows coming from the calendar carry a coloured
+  dot. Every row can be put back (green check) or removed (trash); removing a to-do deletes it,
+  while removing an event just takes it out of the window. "清空" clears the whole Done section.
+- Events removed this way can all be brought back with "恢复被移除的日程" in the settings menu.
 - Everything is saved 0.6s after the last keystroke.
 
 ### Event notes
@@ -77,8 +85,9 @@ System Settings › General › Login Items › `+` → pick `~/Applications/Cal
 
 `~/Library/Application Support/CalendarDesk/notes.json` ("打开备注文件夹" in the menu opens it).
 Format v2: `lists` maps a list key (`pinned` or `yyyy-MM-dd`) to an array of items, each with
-`text / done / created / completed`. Plain-text notes from v1 are split into one item per line on
-first launch.
+`text / done / created / completed`; `eventStates` records which calendar events were ticked off
+(`done`) or taken out of the window (`hidden`), keyed by event id and pruned after 90 days.
+Plain-text notes from v1 are split into one item per line on first launch.
 
 Window frame and preferences live in `UserDefaults` (`com.abram.calendardesk`).
 
@@ -89,7 +98,7 @@ Window frame and preferences live in `UserDefaults` (`com.abram.calendardesk`).
 | `Sources/main.swift` | NSApplication, desktop-level window, menu bar item |
 | `Sources/CalendarStore.swift` | Read-only EventKit access and auto-refresh |
 | `Sources/NotesStore.swift` | Local storage for to-dos and notes, debounced saves, v1→v2 migration |
-| `Sources/TodoList.swift` | To-do boxes, rag-wipe animation, Done section |
+| `Sources/TodoList.swift` | To-do boxes, the reusable rag-wipe animation, Done section |
 | `Sources/DeskView.swift` | SwiftUI interface |
 | `Sources/AppSettings.swift` | Window level, opacity, text size and other preferences |
 | `Sources/Models.swift` | Ranges, event model, formatters |

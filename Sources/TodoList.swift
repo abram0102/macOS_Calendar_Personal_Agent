@@ -1,11 +1,101 @@
 import AppKit
 import SwiftUI
 
-// MARK: - One list: to-dos plus the Done section below them
+// MARK: - The rag wipe
+
+/// Sweeps a small sponge across the view from left to right, wiping its content
+/// away as it goes and leaving a fading wet streak behind.
+struct RagWipe: ViewModifier {
+    let progress: CGFloat
+    let active: Bool
+    let base: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .mask(
+                GeometryReader { g in
+                    Rectangle()
+                        .frame(width: max(0, g.size.width * (1 - progress)))
+                        .offset(x: g.size.width * progress)
+                }
+            )
+            .overlay(sponge)
+    }
+
+    @ViewBuilder
+    private var sponge: some View {
+        if active {
+            GeometryReader { g in
+                ZStack(alignment: .leading) {
+                    // The wet streak just wiped
+                    LinearGradient(colors: [.clear, .white.opacity(0.16), .white.opacity(0.05)],
+                                   startPoint: .leading, endPoint: .trailing)
+                        .frame(width: 34, height: g.size.height)
+                        .offset(x: -34)
+
+                    // The sponge itself
+                    RoundedRectangle(cornerRadius: 3.5, style: .continuous)
+                        .fill(LinearGradient(
+                            colors: [Color(red: 0.62, green: 0.84, blue: 0.88),
+                                     Color(red: 0.28, green: 0.52, blue: 0.62)],
+                            startPoint: .top, endPoint: .bottom))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 3.5, style: .continuous)
+                                .strokeBorder(Color.white.opacity(0.4), lineWidth: 0.8)
+                        )
+                        .frame(width: base + 8, height: base + 2)
+                        .rotationEffect(.degrees(-9))
+                        .shadow(color: .black.opacity(0.4), radius: 2, y: 1)
+                        .offset(y: sin(progress * .pi * 3) * 1.6)   // scrub back and forth
+                }
+                .frame(height: g.size.height)
+                .offset(x: g.size.width * progress - (base + 8) / 2)
+            }
+            .allowsHitTesting(false)
+        }
+    }
+}
+
+extension View {
+    func ragWipe(progress: CGFloat, active: Bool, base: CGFloat) -> some View {
+        modifier(RagWipe(progress: progress, active: active, base: base))
+    }
+}
+
+/// Plays the wipe, then runs `completion` (animated) once the sponge is through.
+func performRagWipe(progress: Binding<CGFloat>,
+                    active: Binding<Bool>,
+                    duration: Double = 0.5,
+                    completion: @escaping () -> Void) {
+    guard !active.wrappedValue else { return }
+    active.wrappedValue = true
+    withAnimation(.easeInOut(duration: duration)) { progress.wrappedValue = 1 }
+    DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.05) {
+        withAnimation(.easeInOut(duration: 0.22)) { completion() }
+    }
+}
+
+// MARK: - One finished thing, whatever it came from
+
+/// A row under Done. It is either a to-do typed in the window or a calendar
+/// event that was ticked off; the actions differ, so they come in as closures.
+struct DoneEntry: Identifiable {
+    let id: String
+    let text: String
+    let completed: Date?
+    let dot: Color?            // nil for a typed to-do, calendar colour for an event
+    let restore: () -> Void
+    let remove: () -> Void
+    let removeHelp: String
+}
+
+// MARK: - One list: to-dos, the day's events, and the Done section below them
 
 struct TodoListView: View {
     let listKey: String
     var accent: Color = .white
+    /// The events of this day, so they can be ticked off alongside the to-dos
+    var events: [DeskEvent] = []
     @ObservedObject var notes: NotesStore
     let base: CGFloat
 
@@ -14,7 +104,29 @@ struct TodoListView: View {
     @FocusState private var addFocused: Bool
 
     private var items: [TodoItem] { notes.todos(listKey) }
-    private var done: [TodoItem] { notes.doneTodos(listKey) }
+
+    private var doneEntries: [DoneEntry] {
+        let todos = notes.doneTodos(listKey).map { item in
+            DoneEntry(id: "todo:" + item.id,
+                      text: item.text,
+                      completed: item.completed,
+                      dot: nil,
+                      restore: { notes.setDone(listKey, id: item.id, done: false) },
+                      remove: { notes.delete(listKey, id: item.id) },
+                      removeHelp: "删除这条")
+        }
+        let fromCalendar = notes.doneEvents(events).map { ev in
+            DoneEntry(id: "event:" + ev.id,
+                      text: ev.title,
+                      completed: notes.completedAt(ev.id),
+                      dot: ev.calendarColor,
+                      restore: { notes.setEventDone(ev.id, day: listKey, done: false) },
+                      remove: { notes.hideEvent(ev.id, day: listKey) },
+                      removeHelp: "从窗口里移除（日历中的日程不受影响）")
+        }
+        return (todos + fromCalendar)
+            .sorted { ($0.completed ?? .distantPast) > ($1.completed ?? .distantPast) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -27,12 +139,12 @@ struct TodoListView: View {
 
             addRow
 
-            if !done.isEmpty {
+            if !doneEntries.isEmpty {
                 doneSection
             }
         }
         .animation(.easeInOut(duration: 0.22), value: items.map(\.id))
-        .animation(.easeInOut(duration: 0.22), value: done.map(\.id))
+        .animation(.easeInOut(duration: 0.22), value: doneEntries.map(\.id))
     }
 
     // MARK: New item
@@ -77,7 +189,7 @@ struct TodoListView: View {
                             .rotationEffect(.degrees(doneExpanded ? 90 : 0))
                         Text("Done")
                             .font(.system(size: base - 2, weight: .semibold))
-                        Text("\(done.count)")
+                        Text("\(doneEntries.count)")
                             .font(.system(size: base - 3).monospacedDigit())
                             .padding(.horizontal, 4).padding(.vertical, 0.5)
                             .background(Capsule().fill(Color.white.opacity(0.12)))
@@ -90,19 +202,22 @@ struct TodoListView: View {
 
                 if doneExpanded {
                     Button("清空") {
-                        withAnimation { notes.clearDone(listKey) }
+                        withAnimation {
+                            notes.clearDone(listKey,
+                                            eventIDs: notes.doneEvents(events).map(\.id))
+                        }
                     }
                     .buttonStyle(.plain)
                     .font(.system(size: base - 3))
                     .foregroundStyle(.white.opacity(0.35))
-                    .help("删除这份清单里所有已完成项")
+                    .help("清空这份 Done：手写待办删除，日历日程从窗口里移除")
                 }
             }
             .padding(.top, 2)
 
             if doneExpanded {
-                ForEach(done) { item in
-                    DoneRow(listKey: listKey, item: item, notes: notes, base: base)
+                ForEach(doneEntries) { entry in
+                    DoneRow(entry: entry, base: base)
                         .transition(.opacity)
                 }
             }
@@ -124,8 +239,6 @@ private struct TodoBox: View {
     @State private var wiping = false
     @FocusState private var editing: Bool
 
-    private let wipeDuration = 0.5
-
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 7) {
             Button(action: complete) {
@@ -143,13 +256,7 @@ private struct TodoBox: View {
                 .foregroundStyle(.white.opacity(0.92))
                 .focused($editing)
                 .disabled(wiping)
-                .mask(
-                    GeometryReader { g in
-                        Rectangle()
-                            .frame(width: max(0, g.size.width * (1 - wipe)))
-                            .offset(x: g.size.width * wipe)
-                    }
-                )
+                .ragWipe(progress: wipe, active: wiping, base: base)
 
             Spacer(minLength: 0)
         }
@@ -163,72 +270,28 @@ private struct TodoBox: View {
                         .strokeBorder(Color.white.opacity(editing ? 0.22 : 0.08), lineWidth: 1)
                 )
         )
-        .overlay(ragOverlay)
         .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
     private func complete() {
-        guard !wiping else { return }
         editing = false
-        wiping = true
-        withAnimation(.easeInOut(duration: wipeDuration)) { wipe = 1 }
-        DispatchQueue.main.asyncAfter(deadline: .now() + wipeDuration + 0.05) {
-            withAnimation(.easeInOut(duration: 0.22)) {
-                notes.setDone(listKey, id: item.id, done: true)
-            }
-        }
-    }
-
-    /// The rag: a small sponge sweeping left to right, leaving a fading wet streak behind it
-    @ViewBuilder
-    private var ragOverlay: some View {
-        if wiping {
-            GeometryReader { g in
-                ZStack(alignment: .leading) {
-                    // The wet streak just wiped
-                    LinearGradient(colors: [.clear, .white.opacity(0.16), .white.opacity(0.05)],
-                                   startPoint: .leading, endPoint: .trailing)
-                        .frame(width: 34, height: g.size.height)
-                        .offset(x: -34)
-
-                    // The sponge itself
-                    RoundedRectangle(cornerRadius: 3.5, style: .continuous)
-                        .fill(LinearGradient(
-                            colors: [Color(red: 0.62, green: 0.84, blue: 0.88),
-                                     Color(red: 0.28, green: 0.52, blue: 0.62)],
-                            startPoint: .top, endPoint: .bottom))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 3.5, style: .continuous)
-                                .strokeBorder(Color.white.opacity(0.4), lineWidth: 0.8)
-                        )
-                        .frame(width: base + 8, height: base + 2)
-                        .rotationEffect(.degrees(-9))
-                        .shadow(color: .black.opacity(0.4), radius: 2, y: 1)
-                        .offset(y: sin(wipe * .pi * 3) * 1.6)   // scrub back and forth a couple of times
-                }
-                .frame(height: g.size.height)
-                .offset(x: g.size.width * wipe - (base + 8) / 2)
-            }
-            .allowsHitTesting(false)
+        performRagWipe(progress: $wipe, active: $wiping) {
+            notes.setDone(listKey, id: item.id, done: true)
         }
     }
 }
 
-// MARK: - One completed item
+// MARK: - One completed row
 
 private struct DoneRow: View {
-    let listKey: String
-    let item: TodoItem
-    @ObservedObject var notes: NotesStore
+    let entry: DoneEntry
     let base: CGFloat
 
     @State private var hovering = false
 
     var body: some View {
         HStack(spacing: 7) {
-            Button {
-                withAnimation { notes.setDone(listKey, id: item.id, done: false) }
-            } label: {
+            Button(action: { withAnimation { entry.restore() } }) {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.system(size: base - 1))
             }
@@ -236,7 +299,14 @@ private struct DoneRow: View {
             .foregroundStyle(.green.opacity(0.55))
             .help("放回待办")
 
-            Text(item.text)
+            if let dot = entry.dot {
+                Circle()
+                    .fill(dot.opacity(0.65))
+                    .frame(width: 5, height: 5)
+                    .help("来自日历")
+            }
+
+            Text(entry.text)
                 .font(.system(size: base - 1.5))
                 .strikethrough(true, color: .white.opacity(0.3))
                 .foregroundStyle(.white.opacity(0.4))
@@ -244,21 +314,19 @@ private struct DoneRow: View {
 
             Spacer(minLength: 4)
 
-            if let t = item.completed {
+            if let t = entry.completed {
                 Text(DeskFormatters.time.string(from: t))
                     .font(.system(size: base - 3.5).monospacedDigit())
                     .foregroundStyle(.white.opacity(0.25))
             }
 
-            Button {
-                withAnimation { notes.delete(listKey, id: item.id) }
-            } label: {
+            Button(action: { withAnimation { entry.remove() } }) {
                 Image(systemName: "trash")
                     .font(.system(size: base - 3))
             }
             .buttonStyle(.plain)
             .foregroundStyle(.white.opacity(hovering ? 0.65 : 0.3))
-            .help("删除这条")
+            .help(entry.removeHelp)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 3)

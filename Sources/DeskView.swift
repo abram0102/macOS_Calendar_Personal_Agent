@@ -145,10 +145,13 @@ struct DeskView: View {
         return store.days.compactMap { day in
             var d = day
             if settings.hidePastEvents, store.isToday(d.date) {
-                d.events = d.events.filter { $0.isAllDay || $0.end >= now }
+                // keep completed ones so they stay visible under Done
+                d.events = d.events.filter {
+                    $0.isAllDay || $0.end >= now || notes.mark($0.id) == .done
+                }
             }
             if settings.hideEmptyDays,
-               d.events.isEmpty,
+               notes.activeEvents(d.events).isEmpty,
                !notes.hasTodos(d.key),
                !store.isToday(d.date) {
                 return nil
@@ -212,6 +215,7 @@ private struct DaySection: View {
     let base: CGFloat
 
     private var isToday: Bool { store.isToday(day.date) }
+    private var activeEvents: [DeskEvent] { notes.activeEvents(day.events) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -231,18 +235,20 @@ private struct DaySection: View {
             }
             .foregroundStyle(isToday ? .white : .white.opacity(0.82))
 
-            if day.events.isEmpty {
+            if activeEvents.isEmpty {
                 Text("—")
                     .font(.system(size: base - 1))
                     .foregroundStyle(.white.opacity(0.25))
                     .padding(.leading, 2)
             } else {
-                ForEach(day.events) { ev in
-                    EventRow(event: ev, notes: notes, base: base)
+                ForEach(activeEvents) { ev in
+                    EventRow(event: ev, dayKey: day.key, notes: notes, base: base)
+                        .transition(.opacity.combined(
+                            with: .scale(scale: 0.96, anchor: .leading)))
                 }
             }
 
-            TodoListView(listKey: day.key, notes: notes, base: base)
+            TodoListView(listKey: day.key, events: day.events, notes: notes, base: base)
         }
         .padding(8)
         .background(
@@ -262,34 +268,48 @@ private struct DaySection: View {
 
 private struct EventRow: View {
     let event: DeskEvent
+    let dayKey: String
     @ObservedObject var notes: NotesStore
     let base: CGFloat
+
     @State private var showNote = false
+    @State private var wipe: CGFloat = 0
+    @State private var wiping = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Circle()
-                    .fill(event.calendarColor)
-                    .frame(width: 6, height: 6)
-                    .offset(y: -1)
-                Text(event.timeText)
-                    .font(.system(size: base - 1.5, weight: .medium).monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.6))
-                    .frame(width: base * 7.8, alignment: .leading)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(event.title)
-                        .font(.system(size: base))
-                        .foregroundStyle(.white.opacity(0.95))
-                        .fixedSize(horizontal: false, vertical: true)
-                    if let loc = event.location {
-                        Text(loc)
-                            .font(.system(size: base - 2.5))
-                            .foregroundStyle(.white.opacity(0.45))
-                            .lineLimit(1)
-                    }
+                // Ticking a calendar event off only records it here; the event itself stays put
+                Button(action: complete) {
+                    Image(systemName: "circle")
+                        .font(.system(size: base - 1, weight: .medium))
                 }
-                Spacer(minLength: 0)
+                .buttonStyle(.plain)
+                .foregroundStyle(event.calendarColor.opacity(0.75))
+                .disabled(wiping)
+                .help("完成 → 擦掉并归入 Done（不会修改日历）")
+
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(event.timeText)
+                        .font(.system(size: base - 1.5, weight: .medium).monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.6))
+                        .frame(width: base * 7.8, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(event.title)
+                            .font(.system(size: base))
+                            .foregroundStyle(.white.opacity(0.95))
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let loc = event.location {
+                            Text(loc)
+                                .font(.system(size: base - 2.5))
+                                .foregroundStyle(.white.opacity(0.45))
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .ragWipe(progress: wipe, active: wiping, base: base)
+
                 Button {
                     showNote.toggle()
                 } label: {
@@ -301,7 +321,7 @@ private struct EventRow: View {
                 .foregroundStyle(.white.opacity(notes.hasEventNote(event.id) ? 0.7 : 0.3))
                 .help("给这条日程加备注（不会写回日历）")
             }
-            if showNote || notes.hasEventNote(event.id) {
+            if !wiping, showNote || notes.hasEventNote(event.id) {
                 NoteEditor(text: notes.eventNote(event.id),
                            placeholder: "备注…",
                            base: base - 0.5,
@@ -311,6 +331,12 @@ private struct EventRow: View {
         }
         .padding(.vertical, 1)
         .help("\(event.calendarTitle)")
+    }
+
+    private func complete() {
+        performRagWipe(progress: $wipe, active: $wiping) {
+            notes.setEventDone(event.id, day: dayKey, done: true)
+        }
     }
 }
 
@@ -431,7 +457,10 @@ struct MonthBrowser: View {
         guard settings.hidePastEvents, store.isToday(day.date) else { return day }
         var d = day
         let now = Date()
-        d.events = d.events.filter { $0.isAllDay || $0.end >= now }
+        // keep completed ones so they stay visible under Done
+        d.events = d.events.filter {
+            $0.isAllDay || $0.end >= now || notes.mark($0.id) == .done
+        }
         return d
     }
 
@@ -461,7 +490,7 @@ struct MonthBrowser: View {
                     .font(.system(size: base - 2))
                     .foregroundStyle(.white.opacity(0.45))
             } else {
-                Text("\(store.days.flatMap(\.events).count) 项")
+                Text("\(notes.activeEvents(store.days.flatMap(\.events)).count) 项")
                     .font(.system(size: base - 2))
                     .foregroundStyle(.white.opacity(0.4))
             }
@@ -493,6 +522,8 @@ private struct WeekCard: View {
 
     private var containsToday: Bool { week.days.contains { store.isToday($0.date) } }
     private var noteCount: Int { week.days.filter { notes.hasTodos($0.key) }.count }
+    private var openCount: Int { week.days.reduce(0) { $0 + notes.activeEvents($1.events).count } }
+    private func open(_ day: DeskDay) -> [DeskEvent] { notes.activeEvents(day.events) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -516,7 +547,7 @@ private struct WeekCard: View {
                         .font(.system(size: base - 3))
                         .foregroundStyle(.yellow.opacity(0.7))
                 }
-                Text("\(week.events.count) 项")
+                Text("\(openCount) 项")
                     .font(.system(size: base - 2).monospacedDigit())
                     .foregroundStyle(.white.opacity(0.45))
                 Image(systemName: "chevron.right")
@@ -537,10 +568,10 @@ private struct WeekCard: View {
                                 .monospacedDigit())
                             .foregroundStyle(.white.opacity(store.isToday(day.date) ? 0.95 : 0.6))
                         HStack(spacing: 1.5) {
-                            ForEach(Array(day.events.prefix(3).enumerated()), id: \.offset) { _, ev in
+                            ForEach(Array(open(day).prefix(3).enumerated()), id: \.offset) { _, ev in
                                 Circle().fill(ev.calendarColor).frame(width: 3.5, height: 3.5)
                             }
-                            if day.events.count > 3 {
+                            if open(day).count > 3 {
                                 Circle().fill(Color.white.opacity(0.35))
                                     .frame(width: 3.5, height: 3.5)
                             }
@@ -573,10 +604,11 @@ private struct DayCard: View {
     let base: CGFloat
 
     private var isToday: Bool { store.isToday(day.date) }
+    private var openEvents: [DeskEvent] { notes.activeEvents(day.events) }
 
     private var summary: String {
-        if day.events.isEmpty { return notes.hasTodos(day.key) ? "（有待办）" : "没有日程" }
-        return day.events.prefix(3).map { ev in
+        if openEvents.isEmpty { return notes.hasTodos(day.key) ? "（有待办）" : "没有日程" }
+        return openEvents.prefix(3).map { ev in
             (ev.isAllDay ? "" : DeskFormatters.time.string(from: ev.start) + " ") + ev.title
         }.joined(separator: " · ")
     }
@@ -603,7 +635,7 @@ private struct DayCard: View {
                             .foregroundStyle(.white)
                     }
                     HStack(spacing: 2) {
-                        ForEach(Array(day.events.prefix(6).enumerated()), id: \.offset) { _, ev in
+                        ForEach(Array(openEvents.prefix(6).enumerated()), id: \.offset) { _, ev in
                             Circle().fill(ev.calendarColor).frame(width: 4, height: 4)
                         }
                     }
@@ -613,13 +645,13 @@ private struct DayCard: View {
                             .foregroundStyle(.yellow.opacity(0.7))
                     }
                     Spacer(minLength: 0)
-                    Text(day.events.isEmpty ? "" : "\(day.events.count) 项")
+                    Text(openEvents.isEmpty ? "" : "\(openEvents.count) 项")
                         .font(.system(size: base - 3).monospacedDigit())
                         .foregroundStyle(.white.opacity(0.4))
                 }
                 Text(summary)
                     .font(.system(size: base - 2))
-                    .foregroundStyle(.white.opacity(day.events.isEmpty ? 0.3 : 0.7))
+                    .foregroundStyle(.white.opacity(openEvents.isEmpty ? 0.3 : 0.7))
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -675,6 +707,12 @@ struct SettingsMenu: View {
                             Text((store.hiddenCalendars.contains(name) ? "  " : "✓ ") + name)
                         }
                     }
+                }
+            }
+            if notes.hiddenEventCount > 0 {
+                Divider()
+                Button("恢复被移除的日程（\(notes.hiddenEventCount)）") {
+                    notes.unhideAllEvents()
                 }
             }
             Divider()
