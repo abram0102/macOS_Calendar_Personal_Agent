@@ -32,6 +32,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleExecutable</key>           <string>CalendarDesk</string>
     <key>CFBundleIdentifier</key>           <string>com.abram.calendardesk</string>
     <key>CFBundlePackageType</key>          <string>APPL</string>
+    <key>CFBundleIconFile</key>             <string>AppIcon</string>
     <key>CFBundleShortVersionString</key>   <string>1.0</string>
     <key>CFBundleVersion</key>              <string>1</string>
     <key>LSMinimumSystemVersion</key>       <string>15.0</string>
@@ -45,6 +46,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 echo "-> Signing (ad-hoc)"
 codesign --force --sign - --timestamp=none "$APP" >/dev/null
